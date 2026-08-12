@@ -67,6 +67,25 @@ h2{font-size:20px;margin:0 0 7px;letter-spacing:-.02em}h3{font-size:11px;text-tr
 .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.72);display:grid;place-items:center;z-index:50;padding:20px}.modal{max-width:520px;width:100%;background:#111821;border:1px solid #2a3441;border-radius:13px;padding:22px}.modal p{color:#8995a4;font-size:12px;line-height:1.6}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 @media(max-width:1150px){.stats{grid-template-columns:repeat(3,1fr)}.two,.three,.insights{grid-template-columns:1fr}.quick-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){aside{position:static;width:100%;height:auto;padding:14px}.app{display:block}main{margin:0;padding:18px}.nav{grid-template-columns:repeat(5,1fr)}.nav button{font-size:0;text-align:center;padding:10px 5px}.nav button:first-letter{font-size:16px}.privacy{display:none}.stats{grid-template-columns:repeat(2,1fr)}.formgrid,.screens{grid-template-columns:1fr}.quick-grid{grid-template-columns:1fr 1fr}header{align-items:center}.welcome,.demo-banner{display:block}.demo-banner .btn{margin-top:10px}.break{grid-template-columns:120px 1fr 58px}}
+.form-note{margin:-4px 0 14px;font-size:12px;line-height:1.5}
+.chart-viewer{max-width:1100px;width:min(1100px,96vw);max-height:92vh;overflow:auto}
+.chart-viewer .viewer-head{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;margin-bottom:14px}
+.chart-viewer .viewer-title{font-size:18px;font-weight:800;color:#e7edf5}
+.chart-viewer .viewer-sub{font-size:11px;color:#7f8b9a;margin-top:4px}
+.chart-viewer .viewer-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0 16px}
+.chart-viewer .viewer-stat{background:#0c1219;border:1px solid #27323e;border-radius:9px;padding:10px}
+.chart-viewer .viewer-stat span{display:block;color:#6f7d8d;font-size:9px;text-transform:uppercase}
+.chart-viewer .viewer-stat b{display:block;margin-top:4px;font-size:13px}
+.chart-images{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.chart-image-card{background:#0b1016;border:1px solid #27323e;border-radius:10px;overflow:hidden}
+.chart-image-card .image-title{padding:9px 11px;color:#aeb9c6;font-size:10px;text-transform:uppercase}
+.chart-image-card img{display:block;width:100%;max-height:58vh;object-fit:contain;background:#070b10;cursor:zoom-in}
+.viewer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+@media(max-width:760px){
+  .chart-viewer .viewer-summary{grid-template-columns:repeat(2,1fr)}
+  .chart-images{grid-template-columns:1fr}
+  .chart-viewer .viewer-head{align-items:center}
+}
 </style>
 </head>
 <body>
@@ -93,8 +112,8 @@ const ASSETS=['Forex','Gold','Crypto','Stock CFD','Index CFD'];
 const STRATEGIES=['Liquidity Sweep','Breakout','Break & Retest','Support/Resistance','Trend Continuation','Reversal','Pullback','Momentum','Mean Reversion','Other'];
 const SESSIONS=['Asian','London','New York','London/NY Overlap','Other'];
 const EMOTIONS=['Calm','Confident','Excited','Fearful','FOMO','Angry','Hesitant','Revenge','Neutral'];
-const MISTAKES=['Early entry','Late entry','Oversized position','Moved SL','Removed SL','Chased trade','Revenge trade','Overtrading','Ignored setup','Low-quality setup','Exited early','Held too long','Other'];
-let trades=[], editing=null, db=null, filter={asset:'All',strategy:'All',result:'All',q:''};
+const MISTAKES=['Entry without confirmation','Early entry','Late entry','Oversized position','Moved SL','Removed SL','Chased trade','Revenge trade','Overtrading','Ignored setup','Low-quality setup','Exited early','Held too long','Other'];
+let trades=[], editing=null, db=null, demoMode=false, filter={asset:'All',strategy:'All',result:'All',q:''};
 const $=id=>document.getElementById(id);
 const n=v=>Number(v||0);
 const uid=()=>crypto.randomUUID ? crypto.randomUUID() : 't_'+Date.now()+'_'+Math.random().toString(36).slice(2);
@@ -138,17 +157,21 @@ async function clearAll(){
   await load(); show('dashboard');
 }
 function calc(t){
-  const entry=n(t.entry), sl=n(t.stopLoss), tp=n(t.takeProfit), exit=n(t.exit), size=n(t.positionSize), contract=n(t.contractSize||1);
+  const entry=n(t.entry), sl=n(t.stopLoss), tp=n(t.takeProfit);
+  const risk=n(t.riskAmount);
+  const pnl=n(t.pnl);
   const priceRisk=Math.abs(entry-sl);
-  const risk=priceRisk*size*contract;
-  const plannedReward=Math.abs(tp-entry)*size*contract;
-  const rr=risk?plannedReward/risk:0;
-  const gross=(exit-entry)*size*contract*(t.direction==='Short'?-1:1);
-  const pnl=gross-n(t.commission)-n(t.swap)-n(t.fees);
-  return {risk,rr,pnl,r:risk?pnl/risk:0,gross};
+  const rr=priceRisk?Math.abs(tp-entry)/priceRisk:0;
+  // Backward compatibility for older local entries.
+  const legacySize=n(t.positionSize);
+  const legacyRisk=priceRisk*legacySize;
+  const effectiveRisk=risk||legacyRisk;
+  const effectivePnl=(t.pnl!==undefined&&t.pnl!=='')?pnl:((t.exit!==undefined&&t.exit!=='')?(n(t.exit)-entry)*legacySize*(t.direction==='Short'?-1:1):0);
+  return {risk:effectiveRisk,rr,pnl:effectivePnl,r:effectiveRisk?effectivePnl/effectiveRisk:0,gross:effectivePnl};
 }
 function rows(){
   return trades.filter(t=>{
+    if(demoMode ? !t.isDemo : t.isDemo) return false;
     const c=calc(t);
     const result=filter.result==='All'||(filter.result==='Win'?c.pnl>0:filter.result==='Loss'?c.pnl<0:c.pnl===0);
     return (filter.asset==='All'||t.assetClass===filter.asset)
@@ -172,6 +195,22 @@ function nav(){
   const current=location.hash.slice(1)||'dashboard';
   $('nav').innerHTML=items.map(x=>`<button class="${current===x[0]?'active':''}" onclick="show('${x[0]}')">${x[1]} ${x[2]}</button>`).join('');
 }
+async function exitDemo(){
+  if(!demoMode){show('dashboard');return;}
+  if(!confirm('Exit demo mode? Your sample trades will be removed. Any real trades you entered will be kept.')) return;
+  const demoTrades=trades.filter(t=>t.isDemo);
+  for(const t of demoTrades){
+    await new Promise((resolve,reject)=>{
+      const req=db.transaction('trades','readwrite').objectStore('trades').delete(t.id);
+      req.onsuccess=()=>resolve(); req.onerror=()=>reject(req.error);
+    });
+  }
+  demoMode=false;
+  localStorage.setItem('tradeedge_demo_mode','0');
+  await load();
+  show('dashboard');
+}
+function enterDemo(){demoMode=true;localStorage.setItem('tradeedge_demo_mode','1');}
 function show(page){
   if(location.hash.slice(1)!==page) location.hash=page;
   editing=null; nav(); $('title').textContent=page==='add'?'Add Trade':page[0].toUpperCase()+page.slice(1); render(page);
@@ -186,7 +225,9 @@ function render(page){
   else dashboard();
 }
 async function load(){
+  demoMode=localStorage.getItem('tradeedge_demo_mode')==='1';
   trades=await allTrades();
+  if(demoMode && !trades.some(t=>t.isDemo)){demoMode=false;localStorage.setItem('tradeedge_demo_mode','0');}
   render(location.hash.slice(1)||'dashboard');
   nav();
 }
@@ -228,7 +269,8 @@ function dashboard(){
         <div class="row"><div class="dot">D</div><div class="grow"><b>Drawdown</b><small>Peak-to-trough P&L decline</small></div><strong class="${s.dd?'neg':''}">$${s.dd.toFixed(2)}</strong></div>
       </div>
     </div>
-    ${ts.length?`<div class="demo-banner"><div><div class="kicker">Dashboard filter</div><p>Showing ${ts.length} trade${ts.length===1?'':'s'}. Use Journal filters for deeper slices of your data.</p></div><button class="btn" onclick="show('journal')">View Journal →</button></div>`:
+    ${demoMode?`<div class="demo-banner"><div><div class="kicker">Demo mode</div><p>You are exploring TradeEdge with sample trades. Exit demo mode when you are ready to start your own journal.</p></div><div style="display:flex;gap:8px"><button class="btn" onclick="show('journal')">View Demo Journal →</button><button class="btn danger" onclick="exitDemo()">Exit Demo Mode</button></div></div>`:
+    ts.length?`<div class="demo-banner"><div><div class="kicker">Dashboard filter</div><p>Showing ${ts.length} trade${ts.length===1?'':'s'}. Use Journal filters for deeper slices of your data.</p></div><button class="btn" onclick="show('journal')">View Journal →</button></div>`:
     `<div class="demo-banner"><div><b>No trades yet</b><p>Start with your own trade or load a safe set of sample trades to explore TradeEdge.</p></div><button class="btn" onclick="loadDemo()">Explore Demo Data</button></div>`}
     <div class="quick-grid">
       <div class="quick"><span>Journal</span><b>Record every decision</b></div>
@@ -250,15 +292,62 @@ function journal(){
     <select class="select" onchange="filter.result=this.value;journal()"><option ${filter.result==='All'?'selected':''}>All</option><option ${filter.result==='Win'?'selected':''}>Win</option><option ${filter.result==='Loss'?'selected':''}>Loss</option></select>
     <button class="btn primary" onclick="show('add')">＋ Add Trade</button>
   </div>
+  ${demoMode?`<div class="demo-banner" style="margin-bottom:13px"><div><div class="kicker">Demo mode</div><p>Sample trades are active. Exit demo mode when you're ready to start your own journal.</p></div><button class="btn danger" onclick="exitDemo()">Exit Demo Mode</button></div>`:''}
   <div class="card table-wrap">
-    ${ts.length?`<table class="table"><thead><tr><th>Date</th><th>Instrument</th><th>Side</th><th>Strategy</th><th>Session</th><th>R</th><th>P&L</th><th>Quality</th><th></th></tr></thead><tbody>
+    ${ts.length?`<table class="table"><thead><tr><th>Date</th><th>Instrument</th><th>Side</th><th>Strategy</th><th>Session</th><th>R</th><th>P&L</th><th>Quality</th><th>Actions</th></tr></thead><tbody>
     ${[...ts].sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(t=>{const c=calc(t);return `<tr>
       <td>${formatDate(t.date)}</td><td><b>${esc(t.instrument||'—')}</b><br><small>${esc(t.assetClass||'')}</small></td>
       <td><span class="pill ${t.direction==='Long'?'long':'short'}">${t.direction}</span></td><td>${esc(t.strategy||'—')}</td><td>${esc(t.session||'—')}</td>
       <td class="${c.r>=0?'pos':'neg'}"><b>${c.r>=0?'+':''}${c.r.toFixed(2)}R</b></td><td class="${c.pnl>=0?'pos':'neg'}"><b>${money(c.pnl)}</b></td>
-      <td>${esc(t.setupQuality||'—')}</td><td><button class="btn small" onclick="editTrade('${t.id}')">Edit</button> <button class="btn small danger" onclick="deleteTrade('${t.id}')">Delete</button></td>
+      <td>${esc(t.setupQuality||'—')}</td><td>${(t.beforeImage||t.afterImage)?`<button class="btn small" onclick="viewTrade('${t.id}')">View</button> `:''}<button class="btn small" onclick="editTrade('${t.id}')">Edit</button> <button class="btn small danger" onclick="deleteTrade('${t.id}')">Delete</button></td>
     </tr>`}).join('')}</tbody></table>`:`<div class="empty"><b>Your journal is empty.</b>Add your first trade or explore the demo dataset.</div>`}
   </div>`;
+}
+
+function viewTrade(id){
+  const t=trades.find(x=>x.id===id);
+  if(!t)return;
+  const c=calc(t);
+  const hasBefore=!!t.beforeImage, hasAfter=!!t.afterImage;
+  if(!hasBefore && !hasAfter){
+    alert('This trade has no chart image attached.');
+    return;
+  }
+  const images=[];
+  if(hasBefore) images.push(`<div class="chart-image-card"><div class="image-title">Before trade</div><img src="${t.beforeImage}" alt="Before trade chart" onclick="zoomImage(this.src)"></div>`);
+  if(hasAfter) images.push(`<div class="chart-image-card"><div class="image-title">After trade</div><img src="${t.afterImage}" alt="After trade chart" onclick="zoomImage(this.src)"></div>`);
+  $('modal').innerHTML=`<div class="modal-backdrop" onclick="closeModal(event)">
+    <div class="modal chart-viewer" onclick="event.stopPropagation()">
+      <div class="viewer-head">
+        <div><div class="viewer-title">${esc(t.instrument||'Trade')} · ${esc(t.direction||'')}</div>
+        <div class="viewer-sub">${formatDate(t.date)} · ${esc(t.session||'—')} · ${esc(t.strategy||'—')}</div></div>
+        <button class="btn small" onclick="closeModal()">✕</button>
+      </div>
+      <div class="viewer-summary">
+        <div class="viewer-stat"><span>Risk</span><b>${money(c.risk)}</b></div>
+        <div class="viewer-stat"><span>P&L</span><b class="${c.pnl>=0?'pos':'neg'}">${money(c.pnl)}</b></div>
+        <div class="viewer-stat"><span>Actual R</span><b class="${c.r>=0?'pos':'neg'}">${c.r>=0?'+':''}${c.r.toFixed(2)}R</b></div>
+        <div class="viewer-stat"><span>Quality</span><b>${esc(t.setupQuality||'—')}</b></div>
+      </div>
+      <div class="chart-images">${images.join('')}</div>
+      <div class="viewer-actions"><button class="btn" onclick="closeModal()">Close</button><button class="btn primary" onclick="editTrade('${t.id}')">Edit Trade</button></div>
+    </div>
+  </div>`;
+  $('modal').style.display='block';
+}
+function zoomImage(src){
+  $('modal').innerHTML=`<div class="modal-backdrop" onclick="closeModal(event)">
+    <div style="max-width:96vw;max-height:96vh;position:relative" onclick="event.stopPropagation()">
+      <button class="btn small" style="position:absolute;right:8px;top:8px;z-index:2" onclick="closeModal()">✕</button>
+      <img src="${src}" alt="Trade chart full view" style="display:block;max-width:96vw;max-height:94vh;object-fit:contain;border-radius:10px;background:#05080c">
+    </div>
+  </div>`;
+  $('modal').style.display='block';
+}
+function closeModal(e){
+  if(e && e.target && !e.target.classList.contains('modal-backdrop'))return;
+  $('modal').innerHTML='';
+  $('modal').style.display='none';
 }
 function field(key,label,type='text',value='',options=''){
   if(type==='select')return `<label class="field"><span>${label}</span><select class="select" id="f_${key}">${options}</select></label>`;
@@ -266,23 +355,24 @@ function field(key,label,type='text',value='',options=''){
   return `<label class="field"><span>${label}</span><input class="input" id="f_${key}" type="${type}" value="${esc(value??'')}"></label>`;
 }
 function form(){
-  const t=editing||{id:uid(),date:new Date().toISOString().slice(0,16),assetClass:'Gold',direction:'Long',account:'Personal',timeframe:'5m',session:'London',strategy:'Liquidity Sweep',setupQuality:'A',confidence:7,marketCondition:'Trending',emotionBefore:'Calm',emotionDuring:'Calm',emotionAfter:'Neutral',ruleAdherence:'Yes',mistake:'None',positionSize:1,contractSize:1,commission:0,swap:0,fees:0};
+  const t=editing||{id:uid(),date:new Date().toISOString().slice(0,16),assetClass:'Gold',direction:'Long',account:'Personal',timeframe:'5m',session:'London',strategy:'Liquidity Sweep',setupQuality:'A',confidence:7,marketCondition:'Trending',emotionBefore:'Calm',emotionDuring:'Calm',emotionAfter:'Neutral',ruleAdherence:'Yes',mistake:'None',riskAmount:100,pnl:0};
   $('content').innerHTML=`
   <div class="card form">
     <div class="head"><div><div class="eyebrow">JOURNAL ENTRY</div><h2>${editing?'Edit Trade':'Record Trade'}</h2></div><span class="muted">All calculations update as you type.</span></div>
     <div class="metrics" id="metrics"></div>
     <h3>Trade Information</h3>
     <div class="formgrid">
-      ${field('date','Date & time','datetime-local',t.date)}${field('instrument','Instrument','text',t.instrument||'')}
+      <label class="field"><span>Date</span><input class="input" id="f_date" type="date" value="${esc((t.date||'').slice(0,10))}"></label>
+      <label class="field"><span>Time</span><input class="input" id="f_time" type="time" value="${esc((t.date||'').slice(11,16))}"></label>
+      ${field('instrument','Instrument','text',t.instrument||'')}
       ${field('assetClass','Asset class','select','',selectOptions(ASSETS,t.assetClass))}${field('direction','Direction','select','',selectOptions(['Long','Short'],t.direction))}
       ${field('account','Account','text',t.account||'Personal')}${field('timeframe','Timeframe','text',t.timeframe||'5m')}
       ${field('session','Session','select','',selectOptions(SESSIONS,t.session))}
     </div>
-    <h3>Entry & Exit</h3>
+    <h3>Entry & Exit</h3><p class="muted form-note">Enter the actual risk you were willing to lose and the final P&L from the trade. TradeEdge calculates R and planned R:R from these values.</p>
     <div class="formgrid">
       ${field('entry','Entry price','number',t.entry)}${field('stopLoss','Stop loss','number',t.stopLoss)}${field('takeProfit','Take profit','number',t.takeProfit)}
-      ${field('exit','Exit price','number',t.exit)}${field('positionSize','Position size','number',t.positionSize)}${field('contractSize','Contract size','number',t.contractSize||1)}
-      ${field('commission','Commission','number',t.commission||0)}${field('swap','Swap','number',t.swap||0)}${field('fees','Other fees','number',t.fees||0)}
+      ${field('exit','Exit price','number',t.exit)}${field('riskAmount','Risk amount','number',t.riskAmount??100)}${field('pnl','P&L','number',t.pnl??0)}
     </div>
     <h3>Setup & Psychology</h3>
     <div class="formgrid">
@@ -309,13 +399,13 @@ function form(){
   window._image={before:t.beforeImage||'',after:t.afterImage||''};
   if(window._image.before)preview('beforeBox',window._image.before);
   if(window._image.after)preview('afterBox',window._image.after);
-  ['entry','stopLoss','takeProfit','exit','positionSize','contractSize','commission','swap','fees','direction'].forEach(k=>$('f_'+k).addEventListener('input',metrics));
+  ['entry','stopLoss','takeProfit','exit','riskAmount','pnl','direction'].forEach(k=>$('f_'+k).addEventListener('input',metrics));
   metrics();
 }
 function metrics(){
-  const t={entry:$('f_entry')?.value,stopLoss:$('f_stopLoss')?.value,takeProfit:$('f_takeProfit')?.value,exit:$('f_exit')?.value,positionSize:$('f_positionSize')?.value,contractSize:$('f_contractSize')?.value,commission:$('f_commission')?.value,swap:$('f_swap')?.value,fees:$('f_fees')?.value,direction:$('f_direction')?.value};
+  const t={entry:$('f_entry')?.value,stopLoss:$('f_stopLoss')?.value,takeProfit:$('f_takeProfit')?.value,exit:$('f_exit')?.value,riskAmount:$('f_riskAmount')?.value,pnl:$('f_pnl')?.value,direction:$('f_direction')?.value};
   const c=calc(t);
-  $('metrics').innerHTML=`<span>Risk<b>$${c.risk.toFixed(2)}</b></span><span>Planned R:R<b>${c.rr.toFixed(2)}</b></span><span>Actual R<b class="${c.r>=0?'pos':'neg'}">${c.r>=0?'+':''}${c.r.toFixed(2)}R</b></span><span>P&L<b class="${c.pnl>=0?'pos':'neg'}">${money(c.pnl)}</b></span>`;
+  $('metrics').innerHTML=`<span>Risk<b>${money(c.risk)}</b></span><span>Planned R:R<b>${c.rr.toFixed(2)}</b></span><span>Actual R<b class="${c.r>=0?'pos':'neg'}">${c.r>=0?'+':''}${c.r.toFixed(2)}R</b></span><span>P&L<b class="${c.pnl>=0?'pos':'neg'}">${money(c.pnl)}</b></span>`;
 }
 function image(input,box){
   const file=input.files&&input.files[0]; if(!file)return;
@@ -328,11 +418,13 @@ function preview(box,src){
   $(box).innerHTML=`<label>${box==='beforeBox'?'Before trade':'After trade'}</label><img src="${src}" alt="Trade chart"><input type="file" accept="image/*" onchange="image(this,'${box}')">`;
 }
 async function saveForm(){
-  const t=editing||{id:uid()};
-  const keys=['date','instrument','assetClass','direction','account','timeframe','session','entry','stopLoss','takeProfit','exit','positionSize','contractSize','commission','swap','fees','strategy','setupQuality','confidence','marketCondition','emotionBefore','emotionDuring','emotionAfter','ruleAdherence','mistake','entryReason','exitReason','notes'];
+  const t=editing||{id:uid(),isDemo:false};
+  if(editing && editing.isDemo) t.isDemo=true;
+  const keys=['instrument','assetClass','direction','account','timeframe','session','entry','stopLoss','takeProfit','exit','riskAmount','pnl','strategy','setupQuality','confidence','marketCondition','emotionBefore','emotionDuring','emotionAfter','ruleAdherence','mistake','entryReason','exitReason','notes'];
   keys.forEach(k=>{const el=$('f_'+k);if(el)t[k]=el.value});
+  const d=$('f_date')?.value||new Date().toISOString().slice(0,10); const tm=$('f_time')?.value||'00:00'; t.date=d+'T'+tm;
   t.confidence=Math.max(1,Math.min(10,n(t.confidence)));
-  t.positionSize=n(t.positionSize);t.contractSize=n(t.contractSize)||1;t.commission=n(t.commission);t.swap=n(t.swap);t.fees=n(t.fees);
+  t.riskAmount=n(t.riskAmount);t.pnl=n(t.pnl);
   t.beforeImage=window._image.before||'';t.afterImage=window._image.after||'';
   await putTrade(t); editing=null; await load(); show('journal');
 }
@@ -378,14 +470,14 @@ function settings(){
     </div>
     <div class="card"><div class="head"><b>Privacy</b><span class="muted">No account required</span></div><p class="muted" style="line-height:1.7">TradeEdge stores journal data in this browser's IndexedDB. Nothing is sent to a TradeEdge server. Export a backup before clearing browser/site data.</p><button class="btn danger" onclick="clearAll()">Delete all local data</button></div>
   </div>
-  <div class="card" style="margin-top:13px"><div class="head"><b>Demo data</b><span class="muted">For exploring the product</span></div><p class="muted">Demo trades are stored locally just like real trades. You can delete them individually or clear all local data.</p><button class="btn" onclick="loadDemo()">Load demo dataset</button></div>`;
+  <div class="card" style="margin-top:13px"><div class="head"><b>Demo data</b><span class="muted">For exploring the product</span></div><p class="muted">Demo mode is intended for exploring the app. Exit demo mode when you're ready to start your own journal. Demo trades are removed when you exit; real trades are kept.</p>${demoMode?'<button class="btn danger" onclick="exitDemo()">Exit Demo Mode</button>':'<button class="btn" onclick="loadDemo()">Load demo dataset</button>'}</div>`;
 }
 function download(blob,name){
   const a=document.createElement('a');const url=URL.createObjectURL(blob);a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),500);
 }
 function exportJSON(){download(new Blob([JSON.stringify({app:'TradeEdge',version:'1.1',exportedAt:new Date().toISOString(),trades},null,2)],{type:'application/json'}),'tradeedge-backup.json')}
 function exportCSV(){
-  const h=['date','instrument','assetClass','direction','account','timeframe','session','entry','stopLoss','takeProfit','exit','positionSize','contractSize','commission','swap','fees','strategy','setupQuality','confidence','marketCondition','emotionBefore','emotionDuring','emotionAfter','ruleAdherence','mistake','entryReason','exitReason','notes'];
+  const h=['date','instrument','assetClass','direction','account','timeframe','session','entry','stopLoss','takeProfit','exit','riskAmount','pnl','strategy','setupQuality','confidence','marketCondition','emotionBefore','emotionDuring','emotionAfter','ruleAdherence','mistake','entryReason','exitReason','notes'];
   const lines=[h.join(','),...trades.map(t=>h.map(k=>`"${String(t[k]??'').replaceAll('"','""')}"`).join(','))];
   download(new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'}),'tradeedge-trades.csv');
 }
@@ -402,10 +494,19 @@ function importJSON(input){
   reader.readAsText(file);
 }
 function demoTrade(days,x){
-  const long=x[2]==='Long', r=x[4];
-  return {id:uid(),date:new Date(Date.now()-days*86400000).toISOString().slice(0,16),instrument:x[0],assetClass:x[1],direction:x[2],strategy:x[3],timeframe:x[6]||'5m',session:x[7]||'London',account:'Demo',entry:100,stopLoss:long?99:101,takeProfit:long?102:98,exit:long?100+r/2:100-r/2,positionSize:1,contractSize:1,commission:0,swap:0,fees:0,setupQuality:x[5]||'A',confidence:7,marketCondition:'Trending',emotionBefore:'Calm',emotionDuring:'Calm',emotionAfter:r>0?'Confident':'Neutral',ruleAdherence:'Yes',mistake:'None',entryReason:'Clear structure and liquidity confluence',exitReason:'Planned exit',notes:'Demo trade for TradeEdge.'};
+  const long=x[2]==='Long', r=x[4], risk=100, pnl=risk*r;
+  return {id:uid(),isDemo:true,date:new Date(Date.now()-days*86400000).toISOString().slice(0,16),instrument:x[0],assetClass:x[1],direction:x[2],strategy:x[3],timeframe:x[6]||'5m',session:x[7]||'London',account:'Demo',entry:100,stopLoss:long?99:101,takeProfit:long?102:98,exit:long?100+r:100-r,riskAmount:risk,pnl:pnl,setupQuality:x[5]||'A',confidence:7,marketCondition:'Trending',emotionBefore:'Calm',emotionDuring:'Calm',emotionAfter:r>0?'Confident':'Neutral',ruleAdherence:'Yes',mistake:'None',entryReason:'Clear structure and liquidity confluence',exitReason:'Planned exit',notes:'Demo trade for TradeEdge.'};
 }
 async function loadDemo(){
+  if(!db) await openDB();
+  const existing=trades.filter(t=>t.isDemo);
+  for(const t of existing){
+    await new Promise((resolve,reject)=>{
+      const req=db.transaction('trades','readwrite').objectStore('trades').delete(t.id);
+      req.onsuccess=()=>resolve(); req.onerror=()=>reject(req.error);
+    });
+  }
+  enterDemo();
   const data=[
     ['XAUUSD','Gold','Long','Liquidity Sweep',2.1,'A+','5m','London'],
     ['EURUSD','Forex','Short','Breakout',-1,'B','15m','New York'],
@@ -425,9 +526,9 @@ async function loadDemo(){
 }
 function formatDate(v){if(!v)return'—';const d=new Date(v);return isNaN(d)?esc(v):d.toLocaleString(undefined,{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-window.show=show;window.editTrade=editTrade;window.deleteTrade=deleteTrade;window.saveForm=saveForm;window.metrics=metrics;window.image=image;window.preview=preview;window.exportJSON=exportJSON;window.exportCSV=exportCSV;window.importJSON=importJSON;window.clearAll=clearAll;window.loadDemo=loadDemo;
+window.show=show;window.exitDemo=exitDemo;window.enterDemo=enterDemo;window.editTrade=editTrade;window.deleteTrade=deleteTrade;window.saveForm=saveForm;window.metrics=metrics;window.image=image;window.preview=preview;window.exportJSON=exportJSON;window.exportCSV=exportCSV;window.importJSON=importJSON;window.clearAll=clearAll;window.loadDemo=loadDemo;
 window.addEventListener('hashchange',()=>{nav();render(location.hash.slice(1)||'dashboard')});
 window.addEventListener('load',async()=>{try{await openDB();await load()}catch(e){console.error(e);$('content').innerHTML='<div class="card"><b>TradeEdge could not open local storage.</b><p class="muted">Please check that browser storage is enabled for this site.</p></div>'}});
 </script>
-</body>
+<div id="modal" style="display:none"></div></body>
 </html>
