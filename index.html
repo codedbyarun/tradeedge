@@ -223,9 +223,12 @@ async function exitDemo(){
   show('dashboard');
 }
 function enterDemo(){demoMode=true;localStorage.setItem('tradeedge_demo_mode','1');}
-function show(page){
+function show(page, preserveEditing=false){
   if(location.hash.slice(1)!==page) location.hash=page;
-  editing=null; nav(); $('title').textContent=page==='add'?'Add Trade':page[0].toUpperCase()+page.slice(1); render(page);
+  // Only clear the edit context when navigating normally.
+  // editTrade() calls show('add', true) so the selected trade remains loaded.
+  if(!preserveEditing) editing=null;
+  nav(); $('title').textContent=page==='add'?(editing?'Edit Trade':'Add Trade'):page[0].toUpperCase()+page.slice(1); render(page);
 }
 function render(page){
   if(page==='dashboard') dashboard();
@@ -462,7 +465,12 @@ async function saveForm(){
   t.beforeImage=window._image.before||'';t.afterImage=window._image.after||'';
   await putTrade(t); editing=null; await load(); show('journal');
 }
-function editTrade(id){editing=trades.find(t=>t.id===id)||null;show('add')}
+function editTrade(id){
+  const trade=trades.find(t=>t.id===id);
+  if(!trade){alert('Trade not found.');return;}
+  editing=trade;
+  show('add',true);
+}
 function group(key){
   const m={};
   rows().forEach(t=>{
